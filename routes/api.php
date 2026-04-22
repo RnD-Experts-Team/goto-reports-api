@@ -151,8 +151,11 @@ Route::prefix('reports/conversations')->group(function () {
     Route::get('/account-names', [ConversationsController::class, 'accountNames'])
         ->name('reports.conversations.account-names');
     // Long-running: pulls every available account for the past N days (default 365).
+    // Pass background=1 to spawn a detached worker (returns immediately).
     Route::match(['get', 'post'], '/backfill', [ConversationsController::class, 'backfill'])
         ->name('reports.conversations.backfill');
+    Route::get('/backfill/status', [ConversationsController::class, 'backfillStatus'])
+        ->name('reports.conversations.backfill.status');
 });
 
 /*

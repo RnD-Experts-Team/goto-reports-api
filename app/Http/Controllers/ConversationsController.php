@@ -7,6 +7,7 @@ namespace App\Http\Controllers;
 use App\Services\GoTo\Reports\ConversationsReportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
@@ -73,21 +74,102 @@ class ConversationsController
      * POST /api/reports/conversations/backfill
      *
      * Body / query params:
-     *   days   integer, default 365 — how far back to pull
+     *   days        integer, default 365 — how far back to pull
+     *   background  '1' to spawn a detached artisan worker and return immediately,
+     *               '0' (default) to run inline and wait for completion
      *
      * Pulls every account on the current token for the requested historical
-     * window (chunked into <=30 day requests internally). Long-running.
+     * window (chunked into <=30 day requests internally). Long-running when
+     * inline; use background=1 + tail storage/logs/backfill.log to monitor.
      */
     public function backfill(Request $request, ConversationsReportService $service): JsonResponse
     {
         $days = (int) $request->input('days', $request->query('days', 365));
         $days = max(1, min($days, 1825)); // clamp 1d..5y
 
+        $background = (string) $request->input('background', $request->query('background', '0')) === '1';
+
+        if ($background) {
+            return $this->spawnBackfillProcess($days);
+        }
+
         $result = $service->backfillAll($days);
 
         return response()->json([
             'ok'     => true,
+            'mode'   => 'inline',
             'result' => $result,
+        ]);
+    }
+
+    /**
+     * Fork the artisan backfill command into a fully detached background
+     * process and return immediately. Output goes to storage/logs/backfill.log.
+     */
+    private function spawnBackfillProcess(int $days): JsonResponse
+    {
+        $php       = PHP_BINARY ?: 'php';
+        $artisan   = base_path('artisan');
+        $logFile   = storage_path('logs/backfill.log');
+        $pidFile   = storage_path('logs/backfill.pid');
+
+        $cmd = sprintf(
+            '%s %s conversations:backfill --days=%d >> %s 2>&1 & echo $!',
+            escapeshellarg($php),
+            escapeshellarg($artisan),
+            $days,
+            escapeshellarg($logFile)
+        );
+
+        // `nohup`-equivalent using shell backgrounding; works on Linux + macOS.
+        $pid = trim((string) shell_exec($cmd));
+        if ($pid !== '') {
+            @file_put_contents($pidFile, $pid);
+        }
+
+        return response()->json([
+            'ok'      => true,
+            'mode'    => 'background',
+            'pid'     => $pid !== '' ? (int) $pid : null,
+            'days'    => $days,
+            'logFile' => $logFile,
+            'hint'    => 'Tail storage/logs/backfill.log to follow progress.',
+        ]);
+    }
+
+    /**
+     * GET /api/reports/conversations/backfill/status
+     *
+     * Returns whether a background backfill is currently running, the latest
+     * tail of the log file, and the current row count in the local DB.
+     */
+    public function backfillStatus(): JsonResponse
+    {
+        $logFile = storage_path('logs/backfill.log');
+        $pidFile = storage_path('logs/backfill.pid');
+
+        $pid     = is_file($pidFile) ? (int) trim((string) @file_get_contents($pidFile)) : null;
+        $running = $pid && @posix_kill($pid, 0);
+
+        $logTail = '';
+        if (is_file($logFile)) {
+            $size = filesize($logFile) ?: 0;
+            $offset = max(0, $size - 8192);
+            $fh = @fopen($logFile, 'r');
+            if ($fh) {
+                @fseek($fh, $offset);
+                $logTail = (string) @fread($fh, 8192);
+                @fclose($fh);
+            }
+        }
+
+        $totalRows = (int) DB::table('call_event_summaries')->count();
+
+        return response()->json([
+            'running'   => (bool) $running,
+            'pid'       => $pid,
+            'totalRows' => $totalRows,
+            'logTail'   => $logTail,
         ]);
     }
 

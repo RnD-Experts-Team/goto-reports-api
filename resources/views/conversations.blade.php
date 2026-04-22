@@ -310,27 +310,53 @@
             window.open(url, '_blank');
         }
 
+        let backfillPoller = null;
         async function runBackfill() {
             const days = prompt('Backfill how many days back? (default 365, max 1825)', '365');
             if (days === null) return;
             const n = parseInt(days, 10);
             if (!n || n < 1) { toast('Invalid days', 'err'); return; }
-            if (!confirm(`This will sync ALL accounts for the past ${n} days.\nLong-running — may take several minutes. Continue?`)) return;
+            if (!confirm(`This will sync ALL accounts for the past ${n} days in the BACKGROUND.\nYou can keep using the UI; the audit log will show progress. Continue?`)) return;
 
-            toast(`Backfilling ${n} days for all accounts… please wait`, '');
-            const started = performance.now();
+            toast(`Starting background backfill (${n} days)…`, '');
             try {
-                const r = await fetch(`${API}/reports/conversations/backfill?days=${n}`, { method: 'POST' });
+                const r = await fetch(`${API}/reports/conversations/backfill?days=${n}&background=1`, { method: 'POST' });
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 const j = await r.json();
-                const ms = Math.round(performance.now() - started);
-                const res = j.result || {};
-                toast(`Backfill done: +${res.synced} new rows across ${res.accounts} accounts in ${(ms/1000).toFixed(1)}s`, 'ok');
-                loadAccountNames();
-                runPreview();
+                if (!j.ok) throw new Error('Server refused to start backfill');
+                toast(`Backfill running in background (PID ${j.pid || '?'})`, 'ok');
+                startBackfillPolling();
             } catch (e) {
-                toast(`Backfill failed: ${e.message}`, 'err');
+                toast(`Backfill failed to start: ${e.message}`, 'err');
             }
+        }
+
+        function startBackfillPolling() {
+            if (backfillPoller) clearInterval(backfillPoller);
+            const log = document.getElementById('auditLog');
+            log.style.display = 'block';
+            log.textContent = '[backfill] starting…\n';
+            let lastRows = null;
+            backfillPoller = setInterval(async () => {
+                try {
+                    const r = await fetch(`${API}/reports/conversations/backfill/status`);
+                    const j = await r.json();
+                    log.textContent = `[backfill] running=${j.running} | totalRows=${j.totalRows} | pid=${j.pid}\n\n--- log tail ---\n${j.logTail || '(no log yet)'}`;
+                    log.scrollTop = log.scrollHeight;
+                    document.getElementById('stat-count').textContent = j.totalRows;
+                    if (lastRows !== null && j.totalRows !== lastRows) {
+                        toast(`+${j.totalRows - lastRows} rows synced`, 'ok');
+                    }
+                    lastRows = j.totalRows;
+                    if (!j.running) {
+                        clearInterval(backfillPoller);
+                        backfillPoller = null;
+                        toast(`Backfill finished — total ${j.totalRows} rows`, 'ok');
+                        loadAccountNames();
+                        runPreview();
+                    }
+                } catch (e) { /* keep polling */ }
+            }, 3000);
         }
 
         async function runAudit() {
