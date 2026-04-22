@@ -31,8 +31,8 @@ return new class extends Migration {
             $table->string('call_provider', 16)->nullable();
             $table->text('participants')->nullable();
 
-            // Raw payload for forward-compat
-            $table->jsonb('raw')->nullable();
+            // Use portable JSON type (works on older PostgreSQL versions too)
+            $table->json('raw')->nullable();
 
             $table->timestamps();
         });
