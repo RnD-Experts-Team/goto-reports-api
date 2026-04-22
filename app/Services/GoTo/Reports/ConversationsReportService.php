@@ -327,8 +327,9 @@ class ConversationsReportService
     }
 
     /**
-     * Insert-only upsert: existing conversation_space_id rows are kept as-is
-     * (no overwrite), new rows are added. Returns number of new rows.
+     * Insert-only upsert that works across MySQL, modern Postgres, AND old
+     * Postgres (< 9.5, which lacks ON CONFLICT). For each row we check
+     * existence by conversation_space_id and only insert when missing.
      */
     private function upsertBatch(array $rows): int
     {
@@ -336,14 +337,41 @@ class ConversationsReportService
             return 0;
         }
 
-        $before = (int) DB::table('call_event_summaries')->count();
+        $ids = array_values(array_unique(array_map(
+            static fn ($r) => (string) $r['conversation_space_id'],
+            $rows
+        )));
 
-        // Postgres ON CONFLICT DO NOTHING via insertOrIgnore — keeps history
-        // immutable; new rows are added without touching existing ones.
-        DB::table('call_event_summaries')->insertOrIgnore($rows);
+        // Find which IDs already exist in one query.
+        $existing = DB::table('call_event_summaries')
+            ->whereIn('conversation_space_id', $ids)
+            ->pluck('conversation_space_id')
+            ->map(fn ($v) => (string) $v)
+            ->all();
+        $existingSet = array_flip($existing);
 
-        $after = (int) DB::table('call_event_summaries')->count();
-        return max(0, $after - $before);
+        $toInsert = [];
+        foreach ($rows as $row) {
+            $cid = (string) $row['conversation_space_id'];
+            if (isset($existingSet[$cid])) {
+                continue;
+            }
+            // Guard against duplicates within this same batch.
+            $existingSet[$cid] = true;
+            $toInsert[] = $row;
+        }
+
+        if (empty($toInsert)) {
+            return 0;
+        }
+
+        // Plain insert — portable across every supported engine. Chunk to
+        // stay well under typical placeholder limits.
+        foreach (array_chunk($toInsert, 200) as $chunk) {
+            DB::table('call_event_summaries')->insert($chunk);
+        }
+
+        return count($toInsert);
     }
 
     /**

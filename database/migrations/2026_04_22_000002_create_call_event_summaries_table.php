@@ -18,10 +18,11 @@ return new class extends Migration {
             $table->string('organization_id')->nullable()->index();
             $table->string('account_name')->nullable()->index();
 
-            // Call data
-            $table->timestampTz('call_created')->nullable()->index();
-            $table->timestampTz('call_answered')->nullable();
-            $table->timestampTz('call_ended')->nullable();
+            // Call data — use plain `timestamp` for cross-engine portability
+            // (works on MySQL + older PostgreSQL; we always store UTC values).
+            $table->timestamp('call_created')->nullable()->index();
+            $table->timestamp('call_answered')->nullable();
+            $table->timestamp('call_ended')->nullable();
             $table->integer('duration_ms')->nullable();
             $table->string('direction', 16)->nullable();
             $table->string('caller_outcome', 32)->nullable();
@@ -31,8 +32,10 @@ return new class extends Migration {
             $table->string('call_provider', 16)->nullable();
             $table->text('participants')->nullable();
 
-            // Use portable JSON type (works on older PostgreSQL versions too)
-            $table->json('raw')->nullable();
+            // Use TEXT for `raw` so the table works on PostgreSQL < 9.4
+            // (no JSON/JSONB type) and on MySQL < 5.7 alike. We only ever
+            // store/read it as a JSON-encoded string.
+            $table->text('raw')->nullable();
 
             $table->timestamps();
         });
