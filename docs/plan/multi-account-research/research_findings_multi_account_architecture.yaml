@@ -1,0 +1,458 @@
+plan_id: multi-account-research
+objective: Understand the multi-account architecture of GoTo Reports API - how accounts are discovered, selected, scoped, and used across the request lifecycle
+focus_area: multi-account-architecture
+created_at: "2026-04-20"
+created_by: researcher
+status: completed
+
+tldr: |
+  - The dashboard already has a working account selector dropdown (`<select id="accountSelect">`) that calls `POST /api/goto/accounts/set` to switch the active account.
+  - The GoTo `/users/v1/me` API returns an `items` array with MULTIPLE accounts — `getAvailableAccounts()` maps all of them. The system already knows about multiple accounts.
+  - However, only ONE accountKey + ONE organizationId are stored at a time (in cache + .env). Switching accounts updates accountKey but does NOT re-derive organizationId.
+  - organizationId is fetched once during initial auth via `/voice-admin/v1/phone-numbers?accountKey=X&pageSize=1` and stored. It is NOT re-fetched when the user changes accounts.
+  - Contact Center endpoints embed accountKey in the URL path (`/accounts/{accountKey}/...`). Call Reports/History/Events use organizationId as a query parameter. Both are scoped to the single "active" values in cache.
+
+research_metadata:
+  methodology: "Hybrid retrieval: read_file for all key source files, grep_search for .env vars, file_search for report services, session memory for prior research context"
+  scope: "Full read of GoToAuthService, GoToApiClient, GoToAuthController, BaseReportService, dashboard.blade.php, config/goto.php, routes/api.php, routes/web.php, .env, .env.example, and headers of 3 report services"
+  confidence: high
+  coverage: 95
+  decision_blockers: 1
+  research_blockers: 0
+
+files_analyzed:
+  - file: GoToAuthService.php
+    path: app/Services/GoTo/GoToAuthService.php
+    purpose: OAuth2 token lifecycle, account discovery from /users/v1/me, organization ID derivation from /voice-admin/v1/phone-numbers
+    key_elements:
+      - element: fetchOrganizationInfo()
+        type: function
+        location: "GoToAuthService.php:~110"
+        description: |
+          Called once during exchangeCodeForTokens(). Two-step process:
+          Step 1: GET /users/v1/me → parses `data['items'][0]['accountKey']` (takes FIRST item only).
+          Step 2: GET /voice-admin/v1/phone-numbers?accountKey=X&pageSize=1 → parses `phoneData['items'][0]['organizationId']`.
+          Falls back to config('goto.account_key') if API call fails.
+      - element: getAvailableAccounts()
+        type: function
+        location: "GoToAuthService.php:~160"
+        description: |
+          Called by GoToAuthController::accounts(). GET /users/v1/me → maps ALL `data['items']` to array of {accountKey: string}.
+          This is the ONLY method that returns MULTIPLE accounts. The response structure is `{items: [{accountKey: "123"}, {accountKey: "456"}, ...]}`.
+      - element: storeTokens()
+        type: function
+        location: "GoToAuthService.php:~315"
+        description: |
+          Stores tokens to Cache (TTL 3500s) AND writes to .env file.
+          Token data includes: access_token, refresh_token, expires_at, token_type, account_key, organization_id, organizer_key.
+          Only ONE account_key and ONE organization_id stored at a time.
+      - element: getAccountKey()
+        type: function
+        location: "GoToAuthService.php:~400"
+        description: "Returns tokens['account_key'] ?? config('goto.account_key'). Single value."
+      - element: getOrganizationId()
+        type: function
+        location: "GoToAuthService.php:~408"
+        description: "Returns tokens['organization_id'] ?? config('goto.organization_id'). Single value."
+      - element: refreshAccessToken()
+        type: function
+        location: "GoToAuthService.php:~200"
+        description: "Preserves account_key and organization_id from previously stored tokens during refresh (refresh response doesn't include them)."
+    language: PHP
+    lines: 415
+
+  - file: GoToApiClient.php
+    path: app/Services/GoTo/GoToApiClient.php
+    purpose: HTTP client wrapping Guzzle with auto token refresh, pagination, and automatic injection of organizationId/accountKey into requests
+    key_elements:
+      - element: request()
+        type: function
+        location: "GoToApiClient.php:~92"
+        description: |
+          Core request method. Automatically injects:
+          - organizationId into query params if endpointRequiresOrgId() returns true
+          - accountKey into query params if endpointRequiresAccountKey() returns true
+          Both values are fetched from GoToAuthService (single active values).
+      - element: endpointRequiresOrgId()
+        type: function
+        location: "GoToApiClient.php:~155"
+        description: "Returns true for endpoints containing: /call-reports/, /call-history/, /call-events-report/"
+      - element: endpointRequiresAccountKey()
+        type: function
+        location: "GoToApiClient.php:~172"
+        description: "Returns true for endpoints containing: /call-history/, /call-events-report/"
+      - element: getOrganizationId()
+        type: function
+        location: "GoToApiClient.php:~148"
+        description: "Gets org ID from auth service or falls back to config('goto.organization_id')"
+      - element: getAccountKey()
+        type: function
+        location: "GoToApiClient.php:~212"
+        description: "Gets account key from auth service or falls back to config('goto.account_key')"
+    language: PHP
+    lines: 390
+
+  - file: GoToAuthController.php
+    path: app/Http/Controllers/GoToAuthController.php
+    purpose: Handles OAuth flow, exposes /status, /accounts, /accounts/set endpoints
+    key_elements:
+      - element: accounts()
+        type: function
+        location: "GoToAuthController.php:~190"
+        description: |
+          GET /api/goto/accounts → calls authService->getAvailableAccounts() which returns ALL accounts from /users/v1/me.
+          Response: {success: true, accounts: [{accountKey: "..."}, ...], current_account: "..."}
+      - element: setAccount()
+        type: function
+        location: "GoToAuthController.php:~210"
+        description: |
+          POST /api/goto/accounts/set with {account_key: "..."}.
+          Gets current stored tokens, overwrites account_key, re-stores via storeTokens().
+          CRITICAL GAP: Does NOT re-derive organizationId for the new account. The organizationId remains stale from the original account.
+      - element: status()
+        type: function
+        location: "GoToAuthController.php:~155"
+        description: "Returns {authenticated, account_key, expires_at}. Passes account_key to dashboard for account selector pre-selection."
+    language: PHP
+    lines: 240
+
+  - file: dashboard.blade.php
+    path: resources/views/dashboard.blade.php
+    purpose: Single-page dashboard with auth management, account selector, and report export UI
+    key_elements:
+      - element: accountSelect
+        type: pattern
+        location: "dashboard.blade.php:~440"
+        description: |
+          HTML: `<select id="accountSelect" onchange="changeAccount(this.value)">`
+          Located inside the Auth Info Card (.token-info section).
+          Label: "Active Account".
+          Each option shows: "Account N: {accountKey}" (numeric key only, no friendly name).
+      - element: loadAccounts()
+        type: function
+        location: "dashboard.blade.php:~640"
+        description: |
+          JS function. Fetches GET /api/goto/accounts.
+          Populates the select dropdown with all accounts from the API response.
+          Pre-selects the account matching currentAccountKey or data.current_account.
+      - element: changeAccount()
+        type: function
+        location: "dashboard.blade.php:~665"
+        description: |
+          JS function. POSTs to /api/goto/accounts/set with {account_key: selectedValue}.
+          Shows success/error alert. Does NOT reload any data or refresh organizationId.
+      - element: checkAuthStatus()
+        type: function
+        location: "dashboard.blade.php:~620"
+        description: "Called on DOMContentLoaded. Fetches /api/goto/status. If authenticated, calls loadAccounts(data.account_key)."
+    language: Blade/HTML/JS
+    lines: 900
+
+  - file: BaseReportService.php
+    path: app/Services/GoTo/Reports/BaseReportService.php
+    purpose: Abstract base for all report services - provides CSV streaming, date formatting, nested value access
+    key_elements:
+      - element: streamCsv()
+        type: function
+        location: "BaseReportService.php:~35"
+        description: |
+          Returns StreamedResponse. Flow:
+          1. Opens php://output stream
+          2. Writes UTF-8 BOM (EF BB BF)
+          3. Writes CSV headers via fputcsv(handle, getCsvHeaders())
+          4. Iterates getData(params) generator, calls transformRow() on each item
+          5. Flushes every 1000 rows
+          6. On error, writes error message as CSV row (doesn't corrupt with HTML)
+          Sets headers: Content-Type text/csv, Content-Disposition attachment, no-cache
+      - element: getCsvHeaders()
+        type: function
+        location: "BaseReportService.php:~90"
+        description: "Abstract. Each report service defines its own CSV column headers."
+      - element: transformRow()
+        type: function
+        location: "BaseReportService.php:~96"
+        description: "Abstract. Each report service maps API response fields to CSV column values."
+      - element: getData()
+        type: function
+        location: "BaseReportService.php:~85"
+        description: "Abstract. Returns Generator. Each report service calls apiClient->getPaginated() or postPaginated()."
+      - element: buildDateRangeParams()
+        type: function
+        location: "BaseReportService.php:~155"
+        description: "Maps startTime/endTime or start_date/end_date to query params."
+    language: PHP
+    lines: 185
+
+  - file: goto.php
+    path: config/goto.php
+    purpose: Central configuration for GoTo API credentials, endpoints, pagination, and token cache
+    key_elements:
+      - element: account_key
+        type: variable
+        location: "goto.php:~27"
+        description: "env('GOTO_ACCOUNT_KEY') - single static value. Currently set to '8679294554919070803' in .env"
+      - element: organization_id
+        type: variable
+        location: "goto.php:~28"
+        description: "env('GOTO_ORGANIZATION_ID') - single static value. Currently set to 'fc93823b-19b5-4988-863f-130136ac3368' in .env"
+      - element: endpoints.contact_center
+        type: variable
+        location: "goto.php:~52-54"
+        description: |
+          Three Contact Center endpoints with {accountKey} placeholder in path:
+          - /contact-center-analytics/v1/accounts/{accountKey}/queue-caller-details
+          - /contact-center-analytics/v1/accounts/{accountKey}/queue-metrics
+          - /contact-center-analytics/v1/accounts/{accountKey}/agent-statuses
+    language: PHP
+    lines: 80
+
+  - file: api.php
+    path: routes/api.php
+    purpose: API route definitions
+    key_elements:
+      - element: goto.accounts
+        type: pattern
+        location: "api.php:~47"
+        description: "GET /api/goto/accounts → GoToAuthController::accounts()"
+      - element: goto.accounts.set
+        type: pattern
+        location: "api.php:~51"
+        description: "POST /api/goto/accounts/set → GoToAuthController::setAccount()"
+    language: PHP
+    lines: 100
+
+  - file: .env
+    path: .env
+    purpose: Environment configuration with GoTo API credentials and tokens
+    key_elements:
+      - element: GOTO_ACCOUNT_KEY
+        type: variable
+        location: ".env:16"
+        description: "Single account key: 8679294554919070803"
+      - element: GOTO_ORGANIZATION_ID
+        type: variable
+        location: ".env:29"
+        description: "Single organization ID: fc93823b-19b5-4988-863f-130136ac3368"
+    language: env
+    lines: 30
+
+patterns_found:
+  - category: architecture
+    pattern: "Single-active-account model"
+    description: |
+      The entire system is designed around ONE active account at a time.
+      Both accountKey and organizationId are stored as single scalar values in the token cache.
+      All API requests read from this single source. There is no per-request account scoping.
+    examples:
+      - file: GoToAuthService.php
+        location: "storeTokens() ~line 315"
+        snippet: "'account_key' => $tokens['account_key'] ?? config('goto.account_key')"
+      - file: GoToApiClient.php
+        location: "request() ~line 105"
+        snippet: "$query['organizationId'] = $organizationId; // single value from auth service"
+    prevalence: common
+
+  - category: architecture
+    pattern: "Account-to-Org ID mapping is one-time derivation"
+    description: |
+      organizationId is derived from accountKey only once, during initial OAuth token exchange.
+      The derivation uses: GET /voice-admin/v1/phone-numbers?accountKey=X&pageSize=1 → items[0].organizationId.
+      When setAccount() changes the accountKey, organizationId is NOT re-derived.
+      This is the PRIMARY BUG for multi-account support.
+    examples:
+      - file: GoToAuthService.php
+        location: "fetchOrganizationInfo() step 2"
+        snippet: "$phoneData['items'][0]['organizationId']"
+      - file: GoToAuthController.php
+        location: "setAccount()"
+        snippet: "$tokens['account_key'] = $accountKey; $this->authService->storeTokens($tokens); // org_id unchanged"
+    prevalence: common
+
+  - category: architecture
+    pattern: "Contact Center endpoints use accountKey in URL path"
+    description: |
+      Contact Center Analytics endpoints embed accountKey directly in the URL:
+      /contact-center-analytics/v1/accounts/{accountKey}/queue-caller-details
+      The report services (QueueCallerDetailsReportService, etc.) do str_replace('{accountKey}', $accountKey, ...).
+      They get accountKey from params['accountKey'] ?? authService->getAccountKey().
+    examples:
+      - file: QueueCallerDetailsReportService.php
+        location: "getData() ~line 35"
+        snippet: "$endpoint = str_replace('{accountKey}', $accountKey, $this->endpoint);"
+    prevalence: common
+
+  - category: architecture
+    pattern: "Call Reports/History/Events use organizationId as query param"
+    description: |
+      GoToApiClient auto-injects organizationId as a query parameter for endpoints matching:
+      /call-reports/, /call-history/, /call-events-report/.
+      Additionally, /call-history/ and /call-events-report/ also get accountKey as query param.
+    examples:
+      - file: GoToApiClient.php
+        location: "request() ~line 108"
+        snippet: "if ($organizationId && $this->endpointRequiresOrgId($endpoint)) { $query['organizationId'] = $organizationId; }"
+    prevalence: common
+
+  - category: architecture
+    pattern: "GoTo /users/v1/me returns array of accounts"
+    description: |
+      The GoTo API /users/v1/me endpoint returns: {items: [{accountKey: "..."}, {accountKey: "..."}, ...]}.
+      Each item in the items array represents a different account the user has access to.
+      getAvailableAccounts() maps ALL items. fetchOrganizationInfo() only takes items[0].
+    examples:
+      - file: GoToAuthService.php
+        location: "getAvailableAccounts() ~line 165"
+        snippet: "return array_map(fn($item) => ['accountKey' => (string) $item['accountKey']], $data['items'] ?? []);"
+      - file: GoToAuthService.php
+        location: "fetchOrganizationInfo() ~line 125"
+        snippet: "$accountKey = (string) $data['items'][0]['accountKey']; // ONLY first item"
+    prevalence: common
+
+  - category: structure
+    pattern: "Token storage: Cache + .env dual persistence"
+    description: |
+      Tokens (including account_key and organization_id) are stored in both Laravel Cache (TTL 3500s) and .env file.
+      Cache is the primary read source. .env provides persistence across app restarts.
+      updateEnvFile() writes GOTO_ACCESS_TOKEN, GOTO_REFRESH_TOKEN, GOTO_ACCOUNT_KEY, GOTO_ORGANIZATION_ID.
+    examples:
+      - file: GoToAuthService.php
+        location: "storeTokens() and updateEnvFile()"
+        snippet: "Cache::put($this->tokenCacheKey, $tokenData, $this->tokenCacheTtl);"
+    prevalence: common
+
+  - category: naming
+    pattern: "accountKey vs organizationId"
+    description: |
+      accountKey: Numeric string (e.g., "8679294554919070803"). Used for Contact Center Analytics URL paths and some query params.
+      organizationId: UUID string (e.g., "fc93823b-19b5-4988-863f-130136ac3368"). Used for Call Reports/History/Events query params.
+      These are DIFFERENT identifiers for the same account. Each accountKey maps to one organizationId.
+    examples:
+      - file: .env
+        location: "lines 16, 29"
+        snippet: "GOTO_ACCOUNT_KEY=8679294554919070803 / GOTO_ORGANIZATION_ID=fc93823b-19b5-4988-863f-130136ac3368"
+    prevalence: common
+
+related_architecture:
+  components_relevant_to_domain:
+    - component: GoToAuthService
+      responsibility: "OAuth lifecycle + account discovery + single-account storage"
+      location: app/Services/GoTo/GoToAuthService.php
+      relationship_to_domain: "Central authority for account state"
+    - component: GoToApiClient
+      responsibility: "HTTP client that auto-injects accountKey/organizationId into requests"
+      location: app/Services/GoTo/GoToApiClient.php
+      relationship_to_domain: "Consumer of account state"
+    - component: GoToAuthController
+      responsibility: "Exposes /accounts and /accounts/set endpoints"
+      location: app/Http/Controllers/GoToAuthController.php
+      relationship_to_domain: "API surface for account management"
+    - component: Dashboard
+      responsibility: "Account selector UI + export UI"
+      location: resources/views/dashboard.blade.php
+      relationship_to_domain: "User-facing account switching"
+    - component: Contact Center Report Services
+      responsibility: "Build {accountKey} URLs for Contact Center Analytics API"
+      location: app/Services/GoTo/Reports/QueueCallerDetailsReportService.php (and 2 others)
+      relationship_to_domain: "Direct consumer of accountKey"
+
+  interfaces_used_by_domain:
+    - interface: GoToAuthServiceInterface
+      location: app/Services/Contracts/GoToAuthServiceInterface.php
+      usage_pattern: "Does NOT declare getAccountKey(), getOrganizationId(), or getAvailableAccounts() - these exist only on the concrete class"
+
+  data_flow_involving_domain: |
+    1. OAuth callback → exchangeCodeForTokens() → fetchOrganizationInfo() → store {account_key, organization_id} in cache+.env
+    2. Dashboard loads → GET /api/goto/status returns current account_key
+    3. Dashboard → GET /api/goto/accounts → getAvailableAccounts() → GET /users/v1/me → returns ALL accounts as [{accountKey}, ...]
+    4. User selects account → POST /api/goto/accounts/set → overwrites account_key in stored tokens (org_id UNCHANGED)
+    5. Report export → controller calls reportService->streamCsv() → getData() → apiClient->getPaginated()
+    6. apiClient->request() reads getOrganizationId() and getAccountKey() from auth service (single active values)
+    7. For Contact Center: report service does str_replace('{accountKey}', ...) on endpoint URL
+    8. For Call Reports/History: apiClient auto-adds organizationId and accountKey query params
+
+  key_relationships_to_domain:
+    - from: GoToAuthController.setAccount()
+      to: GoToAuthService.storeTokens()
+      relationship: calls
+    - from: GoToApiClient.request()
+      to: GoToAuthService.getOrganizationId()
+      relationship: calls
+    - from: GoToApiClient.request()
+      to: GoToAuthService.getAccountKey()
+      relationship: calls
+    - from: QueueCallerDetailsReportService.getData()
+      to: GoToAuthService.getAccountKey()
+      relationship: calls
+    - from: Dashboard JS loadAccounts()
+      to: "GET /api/goto/accounts"
+      relationship: calls
+    - from: Dashboard JS changeAccount()
+      to: "POST /api/goto/accounts/set"
+      relationship: calls
+
+related_conventions:
+  naming_patterns_in_domain: |
+    accountKey: camelCase in API responses/JS, snake_case (account_key) in PHP token storage and route params.
+    organizationId: camelCase in API, snake_case (organization_id) in PHP storage.
+  structure_of_domain: "Single shared token cache entry ('goto_oauth_tokens') holds all auth + account state."
+  error_handling_in_domain: "Account/org fetch failures are non-fatal (logged as warnings, fall back to config values)."
+  testing_in_domain: "No tests found for account switching or multi-account scenarios."
+  documentation_in_domain: "Inline PHPDoc comments on all public methods. No external documentation for multi-account behavior."
+
+related_dependencies:
+  internal:
+    - component: Laravel Cache
+      relationship_to_domain: "Primary storage for token + account state"
+      direction: outbound
+    - component: .env file
+      relationship_to_domain: "Persistence layer for token + account state across restarts"
+      direction: outbound
+  external:
+    - name: "GoTo /users/v1/me"
+      purpose_for_domain: "Returns list of all accounts (items array with accountKey per item)"
+    - name: "GoTo /voice-admin/v1/phone-numbers"
+      purpose_for_domain: "Derives organizationId UUID from accountKey (uses first phone number's org ID)"
+
+domain_security_considerations:
+  sensitive_areas:
+    - area: ".env token persistence"
+      location: "GoToAuthService.updateEnvFile()"
+      concern: "Access tokens and refresh tokens written to .env file on disk"
+    - area: "Account switching without authorization"
+      location: "GoToAuthController.setAccount()"
+      concern: "No validation that the requested account_key is one the user actually has access to. Any account_key string is accepted."
+  authentication_patterns_in_domain: "OAuth2 with auto-refresh. Single user model (no multi-tenant auth)."
+  authorization_patterns_in_domain: "None. No middleware protecting routes. No validation on account switching."
+  data_validation_in_domain: "setAccount() only checks for non-empty account_key. No validation against getAvailableAccounts()."
+
+open_questions:
+  - question: "When switching accounts, should organizationId be re-derived automatically?"
+    context: "setAccount() currently overwrites account_key but leaves organization_id stale. This means Call Reports/History will use the wrong org after switching."
+    type: decision_blocker
+    affects: ["multi-account-implementation"]
+  - question: "Does the /users/v1/me response include any friendly account name or label beyond accountKey?"
+    context: "The dashboard currently shows 'Account 1: 8679294554919070803' which is not user-friendly. If the API returns more fields, we could show better labels."
+    type: research
+    affects: ["dashboard-ux"]
+  - question: "Should the .env file be updated when switching accounts, or only the cache?"
+    context: "Currently storeTokens() writes to both cache and .env. If account switching is frequent, .env writes are unnecessary IO."
+    type: nice_to_know
+    affects: ["multi-account-implementation"]
+
+gaps:
+  - area: "organizationId re-derivation on account switch"
+    description: "setAccount() does not call fetchOrganizationInfo() for the new account. This means organizationId remains from the original account, causing Call Reports/History/Events to query the wrong organization."
+    impact: decision_blocker
+    affects: ["multi-account-implementation"]
+  - area: "Account key validation on setAccount()"
+    description: "No server-side validation that the provided account_key exists in the user's available accounts list."
+    impact: research_blocker
+    affects: ["security", "multi-account-implementation"]
+  - area: "No account-to-org mapping cache"
+    description: "There is no stored mapping of accountKey → organizationId. Each derivation requires an API call to /voice-admin/v1/phone-numbers."
+    impact: nice_to_know
+    affects: ["performance", "multi-account-implementation"]
+  - area: "GoToAuthServiceInterface incomplete"
+    description: "The interface doesn't declare getAccountKey(), getOrganizationId(), or getAvailableAccounts(). GoToApiClient checks `instanceof GoToAuthService` to call these."
+    impact: nice_to_know
+    affects: ["code-quality"]

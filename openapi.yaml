@@ -1,0 +1,810 @@
+openapi: 3.0.3
+info:
+  title: GoTo Connect Report Extraction API
+  description: |
+    A Laravel 12 API for extracting reports from GoTo Connect and exporting them as streamed CSV files.
+    
+    ## Authentication
+    This API uses OAuth2 for authentication with GoTo Connect. Start by visiting `/api/goto/auth` to initiate the OAuth flow.
+    
+    ## CSV Downloads
+    All report endpoints return streamed CSV files. The response will trigger a file download in browsers.
+    
+    ## Pagination
+    All reports automatically handle pagination internally, fetching the complete dataset before streaming the CSV.
+  version: 1.0.0
+  contact:
+    name: API Support
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:8000/api
+    description: Local Development Server
+
+tags:
+  - name: Authentication
+    description: OAuth2 authentication with GoTo Connect
+  - name: Call Reports
+    description: Aggregated call activity reports (Phone Number, Caller, User)
+  - name: Call History
+    description: Detailed call history records
+  - name: Call Events
+    description: Call events summaries and details
+  - name: Contact Center
+    description: Contact Center Analytics (Queue metrics, Agent statuses)
+  - name: System
+    description: Health check and API information
+
+paths:
+  /:
+    get:
+      tags:
+        - System
+      summary: API Documentation
+      description: Returns API documentation and available endpoints
+      operationId: getApiDocs
+      responses:
+        '200':
+          description: API documentation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service:
+                    type: string
+                    example: GoTo Connect Report Extraction API
+                  version:
+                    type: string
+                    example: 1.0.0
+                  documentation:
+                    type: object
+
+  /health:
+    get:
+      tags:
+        - System
+      summary: Health Check
+      description: Returns the health status of the API
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /goto/auth:
+    get:
+      tags:
+        - Authentication
+      summary: Initiate OAuth Flow
+      description: Redirects to GoTo Connect OAuth authorization page
+      operationId: initiateOAuth
+      responses:
+        '302':
+          description: Redirect to GoTo Connect authorization page
+
+  /goto/callback:
+    get:
+      tags:
+        - Authentication
+      summary: OAuth Callback
+      description: Handles the OAuth callback from GoTo Connect after user authorization
+      operationId: oauthCallback
+      parameters:
+        - name: code
+          in: query
+          description: Authorization code from GoTo Connect
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          description: State parameter for CSRF protection
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSuccessResponse'
+        '400':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /goto/status:
+    get:
+      tags:
+        - Authentication
+      summary: Check Auth Status
+      description: Returns current authentication status
+      operationId: getAuthStatus
+      responses:
+        '200':
+          description: Authentication status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthStatusResponse'
+
+  /goto/refresh:
+    post:
+      tags:
+        - Authentication
+      summary: Refresh Token
+      description: Manually trigger an OAuth token refresh
+      operationId: refreshToken
+      responses:
+        '200':
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshSuccessResponse'
+        '500':
+          description: Token refresh failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /reports/call-reports/phone-number-activity:
+    get:
+      tags:
+        - Call Reports
+      summary: Phone Number Activity Summary
+      description: Export phone number activity summary as CSV
+      operationId: getPhoneNumberActivitySummary
+      parameters:
+        - $ref: '#/components/parameters/startTime'
+        - $ref: '#/components/parameters/endTime'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: attachment; filename="phone_number_activity_summary_2024-01-15_120000.csv"
+        '401':
+          description: Unauthorized - Invalid or expired token
+        '500':
+          description: Server error
+
+  /reports/call-reports/phone-number-activity/{phoneNumberId}:
+    get:
+      tags:
+        - Call Reports
+      summary: Phone Number Activity Details
+      description: Export phone number activity details for a specific phone number as CSV
+      operationId: getPhoneNumberActivityDetails
+      parameters:
+        - name: phoneNumberId
+          in: path
+          required: true
+          description: The phone number ID
+          schema:
+            type: string
+        - $ref: '#/components/parameters/startTime'
+        - $ref: '#/components/parameters/endTime'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+  /reports/call-reports/caller-activity:
+    get:
+      tags:
+        - Call Reports
+      summary: Caller Activity Summary
+      description: Export caller activity summary as CSV
+      operationId: getCallerActivitySummary
+      parameters:
+        - $ref: '#/components/parameters/startTime'
+        - $ref: '#/components/parameters/endTime'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+  /reports/call-reports/caller-activity/{callerNumber}:
+    get:
+      tags:
+        - Call Reports
+      summary: Caller Activity Details
+      description: Export caller activity details for a specific caller number as CSV
+      operationId: getCallerActivityDetails
+      parameters:
+        - name: callerNumber
+          in: path
+          required: true
+          description: The caller phone number
+          schema:
+            type: string
+        - $ref: '#/components/parameters/startTime'
+        - $ref: '#/components/parameters/endTime'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+  /reports/call-reports/user-activity:
+    get:
+      tags:
+        - Call Reports
+      summary: User Activity Summary
+      description: Export user activity summary as CSV
+      operationId: getUserActivitySummary
+      parameters:
+        - $ref: '#/components/parameters/startTime'
+        - $ref: '#/components/parameters/endTime'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+  /reports/call-reports/user-activity/{userId}:
+    get:
+      tags:
+        - Call Reports
+      summary: User Activity Details
+      description: Export user activity details for a specific user as CSV
+      operationId: getUserActivityDetails
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: The user ID
+          schema:
+            type: string
+        - $ref: '#/components/parameters/startTime'
+        - $ref: '#/components/parameters/endTime'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+  /reports/call-history/calls:
+    get:
+      tags:
+        - Call History
+      summary: Call History
+      description: Export call history as CSV with optional filters
+      operationId: getCallHistory
+      parameters:
+        - $ref: '#/components/parameters/startTime'
+        - $ref: '#/components/parameters/endTime'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+        - name: direction
+          in: query
+          description: Filter by call direction
+          schema:
+            type: string
+            enum:
+              - inbound
+              - outbound
+        - name: result
+          in: query
+          description: Filter by call result
+          schema:
+            type: string
+            enum:
+              - answered
+              - missed
+              - voicemail
+        - name: userKey
+          in: query
+          description: Filter by specific user key
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+  /reports/call-events/summaries:
+    get:
+      tags:
+        - Call Events
+      summary: Call Events Summaries
+      description: Export call events summaries as CSV
+      operationId: getCallEventsSummaries
+      parameters:
+        - $ref: '#/components/parameters/startTime'
+        - $ref: '#/components/parameters/endTime'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+  /reports/call-events/details/{conversationSpaceId}:
+    get:
+      tags:
+        - Call Events
+      summary: Call Events Details
+      description: Export call events details for a specific conversation as CSV
+      operationId: getCallEventsDetails
+      parameters:
+        - name: conversationSpaceId
+          in: path
+          required: true
+          description: The conversation space ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+  /reports/contact-center/queue-caller-details:
+    get:
+      tags:
+        - Contact Center
+      summary: Queue Caller Details
+      description: Export queue caller details as CSV
+      operationId: getQueueCallerDetails
+      parameters:
+        - $ref: '#/components/parameters/startTime'
+        - $ref: '#/components/parameters/endTime'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+        - $ref: '#/components/parameters/accountKey'
+        - $ref: '#/components/parameters/timezone'
+        - name: queueIds
+          in: query
+          description: Comma-separated queue IDs to filter
+          schema:
+            type: string
+            example: queue1,queue2,queue3
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+  /reports/contact-center/queue-metrics:
+    get:
+      tags:
+        - Contact Center
+      summary: Queue Metrics
+      description: Export queue metrics as CSV
+      operationId: getQueueMetrics
+      parameters:
+        - $ref: '#/components/parameters/startTime'
+        - $ref: '#/components/parameters/endTime'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+        - $ref: '#/components/parameters/accountKey'
+        - $ref: '#/components/parameters/timezone'
+        - name: queueIds
+          in: query
+          description: Comma-separated queue IDs to filter
+          schema:
+            type: string
+        - name: interval
+          in: query
+          description: Aggregation interval for metrics
+          schema:
+            type: string
+            enum:
+              - HOUR
+              - DAY
+              - WEEK
+            default: DAY
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+  /reports/contact-center/agent-statuses:
+    get:
+      tags:
+        - Contact Center
+      summary: Agent Statuses
+      description: Export agent statuses as CSV
+      operationId: getAgentStatuses
+      parameters:
+        - $ref: '#/components/parameters/startTime'
+        - $ref: '#/components/parameters/endTime'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+        - $ref: '#/components/parameters/accountKey'
+        - $ref: '#/components/parameters/timezone'
+        - name: agentIds
+          in: query
+          description: Comma-separated agent IDs to filter
+          schema:
+            type: string
+            example: agent1,agent2
+        - name: queueIds
+          in: query
+          description: Comma-separated queue IDs to filter
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CSV file download
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+components:
+  parameters:
+    startTime:
+      name: startTime
+      in: query
+      description: Start of date range in ISO 8601 format
+      schema:
+        type: string
+        format: date-time
+        example: '2024-01-01T00:00:00Z'
+
+    endTime:
+      name: endTime
+      in: query
+      description: End of date range in ISO 8601 format
+      schema:
+        type: string
+        format: date-time
+        example: '2024-01-31T23:59:59Z'
+
+    startDate:
+      name: start_date
+      in: query
+      description: Alternative start date (YYYY-MM-DD format)
+      schema:
+        type: string
+        format: date
+        example: '2024-01-01'
+
+    endDate:
+      name: end_date
+      in: query
+      description: Alternative end date (YYYY-MM-DD format)
+      schema:
+        type: string
+        format: date
+        example: '2024-01-31'
+
+    accountKey:
+      name: accountKey
+      in: query
+      description: Override account key (uses OAuth account key if not provided)
+      schema:
+        type: string
+
+    timezone:
+      name: timezone
+      in: query
+      description: Timezone for data aggregation
+      schema:
+        type: string
+        default: UTC
+        example: America/New_York
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: healthy
+        service:
+          type: string
+          example: GoTo Reports API
+        version:
+          type: string
+          example: 1.0.0
+        timestamp:
+          type: string
+          format: date-time
+          example: '2024-01-15T12:00:00Z'
+
+    AuthSuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Authentication successful
+        data:
+          type: object
+          properties:
+            token_type:
+              type: string
+              example: Bearer
+            expires_in:
+              type: integer
+              example: 3600
+            account_key:
+              type: string
+              example: '1234567890'
+
+    AuthStatusResponse:
+      type: object
+      properties:
+        authenticated:
+          type: boolean
+          example: true
+        account_key:
+          type: string
+          example: '1234567890'
+        expires_at:
+          type: string
+          format: date-time
+          example: '2024-01-15T13:00:00'
+
+    RefreshSuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Tokens refreshed successfully
+        expires_in:
+          type: integer
+          example: 3600
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: token_exchange_failed
+        message:
+          type: string
+          example: Failed to exchange authorization code for tokens
+
+    # CSV Column Definitions for documentation
+    PhoneNumberActivityRow:
+      type: object
+      description: CSV row format for Phone Number Activity report
+      properties:
+        phone_number_id:
+          type: string
+        phone_number:
+          type: string
+        name:
+          type: string
+        extension:
+          type: string
+        total_calls:
+          type: integer
+        inbound_calls:
+          type: integer
+        outbound_calls:
+          type: integer
+        missed_calls:
+          type: integer
+        answered_calls:
+          type: integer
+        total_duration_seconds:
+          type: integer
+        average_duration_seconds:
+          type: number
+        total_ring_time_seconds:
+          type: integer
+        average_ring_time_seconds:
+          type: number
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+
+    CallHistoryRow:
+      type: object
+      description: CSV row format for Call History report
+      properties:
+        call_id:
+          type: string
+        conversation_id:
+          type: string
+        direction:
+          type: string
+          enum: [inbound, outbound]
+        call_type:
+          type: string
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        duration_seconds:
+          type: integer
+        ring_duration_seconds:
+          type: integer
+        hold_duration_seconds:
+          type: integer
+        result:
+          type: string
+        caller_number:
+          type: string
+        caller_name:
+          type: string
+        callee_number:
+          type: string
+        callee_name:
+          type: string
+        user_id:
+          type: string
+        user_name:
+          type: string
+        user_extension:
+          type: string
+        device:
+          type: string
+        line:
+          type: string
+        recording_available:
+          type: string
+          enum: ['Yes', 'No']
+        recording_url:
+          type: string
+        voicemail_available:
+          type: string
+          enum: ['Yes', 'No']
+        transfer_type:
+          type: string
+        transfer_target:
+          type: string
+        queue_name:
+          type: string
+
+    QueueMetricsRow:
+      type: object
+      description: CSV row format for Queue Metrics report
+      properties:
+        queue_id:
+          type: string
+        queue_name:
+          type: string
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        total_calls_offered:
+          type: integer
+        total_calls_answered:
+          type: integer
+        total_calls_abandoned:
+          type: integer
+        service_level_percent:
+          type: string
+        answer_rate_percent:
+          type: string
+        abandon_rate_percent:
+          type: string
+        average_speed_to_answer_seconds:
+          type: number
+        average_wait_time_seconds:
+          type: number
+        average_talk_time_seconds:
+          type: number
+        average_handle_time_seconds:
+          type: number
+        max_wait_time_seconds:
+          type: integer
+
+    AgentStatusRow:
+      type: object
+      description: CSV row format for Agent Status report
+      properties:
+        agent_id:
+          type: string
+        agent_name:
+          type: string
+        agent_email:
+          type: string
+        agent_extension:
+          type: string
+        queue_id:
+          type: string
+        queue_name:
+          type: string
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        status:
+          type: string
+        logged_in_duration_seconds:
+          type: integer
+        available_duration_seconds:
+          type: integer
+        on_call_duration_seconds:
+          type: integer
+        total_calls_handled:
+          type: integer
+        calls_answered:
+          type: integer
+        calls_missed:
+          type: integer
+        average_handle_time_seconds:
+          type: number
+        occupancy_rate_percent:
+          type: string
+        utilization_rate_percent:
+          type: string
