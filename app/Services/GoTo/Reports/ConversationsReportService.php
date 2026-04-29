@@ -226,7 +226,7 @@ class ConversationsReportService
             'Account Key'     => $r->account_key,
             'Organization ID' => $r->organization_id,
             'Account Name'    => $r->account_name,
-            'Date'            => $r->call_created?->toIso8601String(),
+            'Date'            => $r->call_created?->setTimezone('America/New_York')->toIso8601String(),
             'Duration'        => $this->formatDuration($r->duration_ms),
             'Call Result'     => $this->mapCallerOutcome((string) $r->caller_outcome),
             'From'            => $r->caller_number,
