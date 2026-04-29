@@ -9,6 +9,7 @@ use App\Services\GoTo\Reports\ConversationsReportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
@@ -32,7 +33,11 @@ class ConversationsController
      */
     public function index(Request $request, ConversationsReportService $service, GoToAuthService $authService): JsonResponse|StreamedResponse
     {
-        $authService->refreshAccessToken();
+        try {
+            $authService->refreshAccessToken();
+        } catch (\Throwable $e) {
+            Log::warning('ConversationsController: token refresh skipped', ['reason' => $e->getMessage()]);
+        }
 
         $shouldSync = $request->query('sync', '1') !== '0';
 
