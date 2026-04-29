@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers;
 
+use App\Services\GoTo\GoToAuthService;
 use App\Services\GoTo\Reports\ConversationsReportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -29,8 +30,10 @@ class ConversationsController
      *   format                'json' (default) or 'csv'
      *   limit                 optional integer cap
      */
-    public function index(Request $request, ConversationsReportService $service): JsonResponse|StreamedResponse
+    public function index(Request $request, ConversationsReportService $service, GoToAuthService $authService): JsonResponse|StreamedResponse
     {
+        $authService->refreshAccessToken();
+
         $shouldSync = $request->query('sync', '1') !== '0';
 
         // Default to the last 30 days when caller omits both bounds.

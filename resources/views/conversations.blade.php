@@ -187,7 +187,7 @@
                             <th>Account Key</th>
                             <th>Organization ID</th>
                             <th>Account Name</th>
-                            <th>Date</th>
+                            <th>Date [US/Mountain]</th>
                             <th>Duration</th>
                             <th>Call Result</th>
                             <th>From</th>
